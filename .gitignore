@@ -1,0 +1,15 @@
+.vscode
+./updated/
+agent/
+./
+myenv/
+./myenv/
+p1.ipynb
+./p1.ipynb/
+./env
+*.pyc
+myenv/
+*.ipynb
+
+
+
