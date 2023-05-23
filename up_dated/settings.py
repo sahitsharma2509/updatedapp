@@ -12,20 +12,9 @@ https://docs.djangoproject.com/en/4.1/ref/settings/
 
 from pathlib import Path
 from . info import *
-
-import logging
 import sys
 from datetime import timedelta
-log = logging.getLogger(__name__)
-log.setLevel(logging.DEBUG)
 
-formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-
-stream_handler = logging.StreamHandler(sys.stdout)
-stream_handler.setFormatter(formatter)
-stream_handler.setLevel(logging.DEBUG)
-
-log.addHandler(stream_handler)
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -44,8 +33,6 @@ INTERNAL_IPS =[
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
-
 
 # Application definition
 
@@ -57,7 +44,6 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "authentication",
-    "debug_toolbar",
     'rest_framework',
     "corsheaders",
     'knox',
@@ -65,7 +51,6 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
-    "debug_toolbar.middleware.DebugToolbarMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -135,12 +120,11 @@ DATABASES = {
         "ENGINE": "django.db.backends.postgresql",
         'NAME': 'railway',
         'USER': 'postgres',
-        'PASSWORD': 'eQU2EvzQOZNt8cSPIbs0',
-        'HOST': 'containers-us-west-175.railway.app',
-        'PORT': '5890',
+        'PASSWORD': '5Q6a4JT1o2I7f33b7ot6',
+        'HOST': 'containers-us-west-186.railway.app',
+        'PORT': '6055',
     }
 }
-
 CORS_ALLOWED_ORIGINS = [
 
     "http://localhost:3000",
@@ -223,4 +207,4 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 
 
-ALLOWED_HOSTS = ['localhost:3000', '127.0.0.1','localhost']
+ALLOWED_HOSTS = ['localhost:3000', '127.0.0.1','localhost','http://3.83.113.62/']

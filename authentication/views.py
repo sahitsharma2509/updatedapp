@@ -13,7 +13,7 @@ from . tokens import generate_token
 from .search import qsearch
 from .loaders import readFile,get_response
 from .baby_agent import get_baby_agi_response
-from authentication.models import Conversation ,PdfDocument , Message , Vectorstore
+from authentication.models import Conversation ,PdfDocument , Message , Vectorstore , YouTubeLink
 from django.http import HttpResponseServerError,StreamingHttpResponse
 import datetime
 from django.core.files.storage import default_storage
@@ -30,8 +30,11 @@ from rest_framework import generics
 from rest_framework.response import Response
 from .serializers import MessageSerializer,ConversationSerializer,UserSerializer,PdfDocumentSerializer
 from .utils import getMessage
+from .youtube import readYoutube
 from django.http import JsonResponse
-
+from django.core.exceptions import ValidationError
+from django.core.validators import URLValidator
+import re
 import json
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import permission_classes, authentication_classes,api_view
@@ -142,6 +145,43 @@ def upload_single_pdf(request):
     else:
         return JsonResponse({'error': 'Invalid request method'}, status=405)
 
+@authentication_classes([JWTAuthentication])
+@api_view(['POST'])
+def store_youtube_url(request):
+    if request.method == 'POST':
+        try:
+            url = request.data.get('url')
+        except KeyError:
+            return JsonResponse({'error': 'No URL provided.'}, status=400)
+
+        # Validate URL
+        validate = URLValidator()
+        try:
+            validate(url)
+        except ValidationError as e:
+            return JsonResponse({'error': str(e)}, status=400)
+
+        # Check if it's a YouTube URL
+        youtube_pattern = r'(https?://)?(www\.)?(youtube\.com|youtu\.?be)/.+$'
+        if not re.match(youtube_pattern, url):
+            return JsonResponse({'error': 'Invalid YouTube URL.'}, status=400)
+
+        user = request.user
+        yt_link = YouTubeLink.objects.create(user=user, url=url)
+
+        # Update Pinecone index here based on the YouTube URL
+        # You will have to define this function
+        pinecone_index = readYoutube(user, yt_link)
+
+        # Store Pinecone index in cache
+        cache_key = f'pinecone_index:{user.id}:{yt_link.id}'
+        cache.set(cache_key, pinecone_index)
+
+        return JsonResponse({'success': 'YouTube URL stored successfully', 'yt_link_id': yt_link.id})
+
+    else:
+        return JsonResponse({'error': 'Invalid request method'}, status=405)
+    
 
 """def upload_pdf(request):
     if request.method == 'POST':
@@ -214,6 +254,51 @@ def answer(request):
         return JsonResponse(response_data, status=200)
 
 
+@authentication_classes([JWTAuthentication])
+@api_view(['POST'])
+def chatyt(request):
+    if request.method == "POST":
+        data = json.loads(request.body)
+        print(f"Received data: {data}") 
+
+        conversation_id = data.get('conversation')
+        is_user = data.get('is_user')
+        text = data.get('text')
+        user_id = request.user
+        conversation = Conversation.objects.get(pk=conversation_id)
+        #print("Youtube",yt_link)
+      
+
+        yt_link_id = conversation.yt_link_id
+
+        print("Youtube2",yt_link_id)
+        if yt_link_id is not None:
+            yt_link = YouTubeLink.objects.get(pk=yt_link_id)
+            print(f"Working with YouTube link: {yt_link.url}")
+
+        cache_key = f'pinecone_index_v2:{user_id}:{yt_link_id}'
+        cache_value = cache.get(cache_key)
+        pinecone_index = cache_value.get('index', None) if cache_value else None
+        namespace = cache_value.get('namespace', None) if cache_value else None
+
+        if pinecone_index is None:
+            try:
+                vectorstore = Vectorstore.objects.get(user=user_id, youtube_link_id=yt_link_id)
+                pinecone_index = vectorstore.index
+                namespace = vectorstore.namespace
+                cache.set(cache_key, {'index': pinecone_index, 'namespace': namespace})
+            except Vectorstore.DoesNotExist:
+                # Handle the case where the Vectorstore does not exist
+                pass
+        print(text)
+        print(str(pinecone_index))
+        print(namespace)
+        response = get_response(text, str(pinecone_index),namespace)  #LAST STEP
+        message_user = Message.objects.create(conversation=conversation, is_user=True, text=text)
+        message_bot = Message.objects.create(conversation=conversation, is_user=False, text=response) 
+        response_data = {'output': response}
+        print(response)
+        return JsonResponse(response_data, status=200)
 
 
 class PdfDocumentListCreateView(generics.ListCreateAPIView):
@@ -260,15 +345,20 @@ class ConversationListCreateView(generics.ListCreateAPIView):
 def create_conversation(request):
     try:
         user = request.user
-        
-        pdf_document_id = request.data.get('pdf_document_id', None)
-        conversation_type = 'pdf' if pdf_document_id is not None else 'chat'
 
-        if conversation_type == 'pdf' and pdf_document_id is not None:
+        pdf_document_id = request.data.get('pdf_document_id', None)
+        yt_link_id = request.data.get('yt_link_id', None)
+
+        if yt_link_id is not None:
+            conversation_type = 'yt-chat'
+            yt_link = get_object_or_404(YouTubeLink, id=yt_link_id)
+            conversation = Conversation.objects.create(user=user, conversation_type=conversation_type, yt_link=yt_link)
+        elif pdf_document_id is not None:
+            conversation_type = 'pdf'
             pdf_document = get_object_or_404(PdfDocument, id=pdf_document_id)
             conversation = Conversation.objects.create(user=user, conversation_type=conversation_type, pdf_document=pdf_document)
-
         else:
+            conversation_type = 'chat'
             conversation = Conversation.objects.create(user=user, conversation_type=conversation_type)
 
         return JsonResponse({'conversation_id': conversation.id}, status=201)

@@ -1,5 +1,5 @@
 from rest_framework.serializers import ModelSerializer
-from .models import Message,Conversation, PdfDocument
+from .models import Message,Conversation, PdfDocument, YouTubeLink
 from django.contrib.auth.models import User
 from rest_framework import serializers
 
@@ -13,6 +13,11 @@ class PdfDocumentSerializer(serializers.ModelSerializer):
     class Meta:
         model = PdfDocument
         fields = ('id', 'document', 'timestamp', 'user','name')
+
+class YouTubeLinkSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = YouTubeLink
+        fields = ('id', 'url', 'timestamp', 'user')
 
 class MessageSerializer(serializers.ModelSerializer):
     class Meta:

@@ -17,7 +17,7 @@ os.environ['GOOGLE_CSE_ID'] = "71569d2dba74540d9"
 os.environ['GOOGLE_API_KEY']="AIzaSyAIqeLS5pxxx2iq52GkV3g_1AZzSwdRxa8"
 os.environ['SERPER_API_KEY']='3d856dbf3811b58136f49fd8ccfcac3c80bd3f22bacff9f9fec7f10fdcee11c3'
 os.environ["WOLFRAM_ALPHA_APPID"] = "X4LW2T-EXEGW5E7T6"
-os.environ["OPENAI_API_KEY"] = "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"
+os.environ["OPENAI_API_KEY"] = "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"
 from langchain.utilities.wolfram_alpha import WolframAlphaAPIWrapper
 
 search = GoogleSearchAPIWrapper()
@@ -58,7 +58,11 @@ chat_history = ConversationBufferMemory()
 
 def qsearch(query):
     print(f"qsearch called with query: {query}")  # Add print statement
-    output = agent_chain.run(input=query)
+    try:
+        output = agent_chain.run(input=query)  # This is where it's failing
+    except Exception as e:
+        print(f"Error running agent_chain: {e}")
+        raise
     print(f"Agent chain output: {output}")  # Add print statement
     memory.chat_memory.add_user_message(query)
     memory.chat_memory.add_ai_message(output)

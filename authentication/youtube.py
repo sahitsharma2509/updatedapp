@@ -11,9 +11,11 @@ from django.conf import settings
 import os
 from django.core.cache import cache
 import logging
-from . models import PdfDocument,Vectorstore
+from . models import PdfDocument,Vectorstore,YouTubeLink
 import uuid
 from langchain.docstore.document import Document 
+from langchain.document_loaders import YoutubeLoader
+
 
 
 llm = OpenAI(temperature=0,verbose=True,streaming=True)
@@ -27,14 +29,7 @@ logger = logging.getLogger(__name__)
 
 CACHE_KEY_PREFIX = "pinecone_index:"
 
-def get_full_path(file_path):
-    """
-    Returns the full path to the file located at file_path.
-    """
-    return os.path.join(settings.MEDIA_ROOT, file_path)
-
-
-def create_namespace(file_path,name):
+def create_namespace_from_youtube(link,name):
     """
     Creates a namespace in the index for the given file path.
     """
@@ -42,16 +37,15 @@ def create_namespace(file_path,name):
 
     namespace = name
   
-
-    index_name = embed_doc(file_path,str(index_name),namespace)
+    index_name = embed_doc(link,str(index_name),namespace)
     #Write upsert function. 
     #docsearch = Pinecone.from_documents(texts,embeddings,index_name=index_name) # If it doesn't work use upsert!!!!!!
     #index = pinecone.Index(index_name=index_name)
     return index_name
 
-def embed_doc(file_path,index_name,namespace):
+def embed_doc(link,index_name,namespace):
     embeddings = OpenAIEmbeddings(openai_api_key = "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")
-    loader = PyMuPDFLoader(get_full_path(file_path))
+    loader = YoutubeLoader.from_youtube_url(link)
     documents = loader.load()
     text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(chunk_size=100, chunk_overlap=20)
     texts = text_splitter.split_documents(documents)
@@ -117,27 +111,27 @@ def query_pinecone(query):
     
     return embed_query
 
-def readFile(user, doc):
-    cache_key = f"pinecone_index_v2:{user.id}:{doc.id}"
-    pinecone_index = cache.get(cache_key)    
+def readYoutube(user, yt_link):
+    cache_key = f"pinecone_index_youtube:{user.id}:{yt_link.id}"
+    cache_value = cache.get(cache_key)   
+    pinecone_index = cache_value.get('index', None) if cache_value else None
+
     if pinecone_index is None:
         try:
-            pdf_document = PdfDocument.objects.get(user=user,pk=doc.id)
-
-        except PdfDocument.DoesNotExist:
+            youtube_link = YouTubeLink.objects.get(user=user,pk=yt_link.id)
+        except YouTubeLink.DoesNotExist:
             return None
-        pinecone_index, created = Vectorstore.objects.get_or_create(user=user, document=doc,namespace=pdf_document.name) #This line gives an error
-        
-        
+        pinecone_index, created = Vectorstore.objects.get_or_create(user=user, youtube_link=yt_link, namespace=yt_link.url)
+
         if created:
             pinecone_index.save()  # Save the object to the database first
-            pinecone_index.index = create_namespace(pdf_document.document.path,pdf_document.name)  # Assign the new UUID value
-            pinecone_index.save() 
-        
-        cache.set(cache_key, {'index': pinecone_index.index, 'namespace': pdf_document.name})
-        index = pinecone_index.index
-    
-    return index
+            pinecone_index.index = create_namespace_from_youtube(youtube_link.url,youtube_link.url)  # Assign the new UUID value
+            pinecone_index.save()
+
+        cache.set(cache_key, {'index': pinecone_index.index, 'namespace': youtube_link.url})
+
+    return pinecone_index.index
+
 
 
 
