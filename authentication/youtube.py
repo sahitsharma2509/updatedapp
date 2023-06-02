@@ -1,3 +1,5 @@
+
+
 from langchain.document_loaders import PyMuPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings.openai import OpenAIEmbeddings
@@ -11,21 +13,23 @@ from django.conf import settings
 import os
 from django.core.cache import cache
 import logging
-from . models import PdfDocument,Vectorstore,YouTubeLink
+from . models import PdfDocument,Vectorstore,YouTubeLink , KnowledgeDocument
 import uuid
 from langchain.docstore.document import Document 
 from langchain.document_loaders import YoutubeLoader
 
 
 
-llm = OpenAI(temperature=0,verbose=True,streaming=True)
+llm = OpenAI(streaming=True, callbacks=[StreamingStdOutCallbackHandler()], temperature=0)
 
 pinecone.init(
     api_key="53cbabaf-5606-45f9-993b-5363276c6222",  # find at app.pinecone.io
     environment="us-east-1-aws"  # next to api key in console
 )
 
-logger = logging.getLogger(__name__)
+import logging
+
+logger = logging.getLogger('mylogger')
 
 CACHE_KEY_PREFIX = "pinecone_index:"
 
@@ -44,7 +48,7 @@ def create_namespace_from_youtube(link,name):
     return index_name
 
 def embed_doc(link,index_name,namespace):
-    embeddings = OpenAIEmbeddings(openai_api_key = "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")
+    embeddings = OpenAIEmbeddings(openai_api_key = "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")
     loader = YoutubeLoader.from_youtube_url(link)
     documents = loader.load()
     text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(chunk_size=100, chunk_overlap=20)
@@ -94,7 +98,7 @@ def get_response(query, pinecone_index ,namespace):
 
         chain = load_qa_chain(llm, chain_type="stuff")
         response = chain.run(input_documents=test2, question=query)
-        return response
+        return response.output
     
     except AttributeError as e:
         logger.exception(f"Error accessing Pinecone index: {e}")
@@ -105,32 +109,41 @@ def get_response(query, pinecone_index ,namespace):
 
 def query_pinecone(query):
     # generate embeddings for the query
-    embeddings = OpenAIEmbeddings(openai_api_key = "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")
+    embeddings = OpenAIEmbeddings(openai_api_key = "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")
     embed_query = embeddings.embed_query(query)
     # search pinecone index for context passage with the answer
     
     return embed_query
 
-def readYoutube(user, yt_link):
-    cache_key = f"pinecone_index_youtube:{user.id}:{yt_link.id}"
-    cache_value = cache.get(cache_key)   
+def readYoutube(user, document):
+    cache_key = f"pinecone_index_youtube:{user.id}:{document.id}"
+    cache_value = cache.get(cache_key)
     pinecone_index = cache_value.get('index', None) if cache_value else None
+    knowledgebase = document.knowledgebase_set.first()
 
     if pinecone_index is None:
         try:
-            youtube_link = YouTubeLink.objects.get(user=user,pk=yt_link.id)
-        except YouTubeLink.DoesNotExist:
+            youtube_document = KnowledgeDocument.objects.get(pk=document.id)
+        except KnowledgeDocument.DoesNotExist:
+            logger.error(f'Document not found for user {user.id} and document id {document.id}')
             return None
-        pinecone_index, created = Vectorstore.objects.get_or_create(user=user, youtube_link=yt_link, namespace=yt_link.url)
+
+        pinecone_index, created = Vectorstore.objects.get_or_create(user=user, document=youtube_document, knowledgebase=knowledgebase, namespace=youtube_document.data['url'])
 
         if created:
             pinecone_index.save()  # Save the object to the database first
-            pinecone_index.index = create_namespace_from_youtube(youtube_link.url,youtube_link.url)  # Assign the new UUID value
+            pinecone_index.index = create_namespace_from_youtube(youtube_document.data['url'], youtube_document.data['url'])  # Assign the new UUID value
             pinecone_index.save()
 
-        cache.set(cache_key, {'index': pinecone_index.index, 'namespace': youtube_link.url})
+        cache.set(cache_key, {'index': pinecone_index.index, 'namespace': youtube_document.data['url']})
+        logger.info(f'Cache updated for user {user.id} and document id {document.id}')
+    else:
+        logger.info(f'Cache hit for user {user.id} and document id {document.id}')
 
     return pinecone_index.index
+
+
+
 
 
 

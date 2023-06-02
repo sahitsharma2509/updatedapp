@@ -18,10 +18,14 @@ urlpatterns = [
     path('chat/', views.ConversationListCreateView.as_view(), name='conversations-list-create'),
     path('chat/message/',views.create_message, name='create_message'),
     path('chat/baby_agi/',views.baby_agi_message, name='baby_agi_message'),
-    path('chat/yt/',views.chatyt, name='chatyt'),
+    path('chat/knowledge/',views.chat_knowledge, name='chat_knowledge'),
     path('user/', views.CurrentUserView.as_view(), name='current-user'),
     path('chat/conversations/',views.create_conversation, name='create_conversation'),
     path('pdf/', views.PdfDocumentListCreateView.as_view(), name='pdf-list-create'),
+    path('create_knowledgebase/', views.create_knowledgebase, name='create_knowledgebase'),
+    path('get_knowledgebases/', views.get_knowledgebases, name='get_knowledgebases'),
+    path('delete_knowledgebase/<int:knowledgebase_id>/', views.delete_knowledgebase, name='delete_knowledgebase'),
+     path('knowledgebases/', views.get_knowledgebases, name='get_knowledgebases'),
     
 
    

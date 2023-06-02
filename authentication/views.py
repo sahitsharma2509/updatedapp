@@ -13,7 +13,7 @@ from . tokens import generate_token
 from .search import qsearch
 from .loaders import readFile,get_response
 from .baby_agent import get_baby_agi_response
-from authentication.models import Conversation ,PdfDocument , Message , Vectorstore , YouTubeLink
+from authentication.models import Conversation ,PdfDocument , Message , Vectorstore , YouTubeLink , KnowledgeDocument , Knowledgebase
 from django.http import HttpResponseServerError,StreamingHttpResponse
 import datetime
 from django.core.files.storage import default_storage
@@ -28,10 +28,12 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework import generics
 from rest_framework.response import Response
-from .serializers import MessageSerializer,ConversationSerializer,UserSerializer,PdfDocumentSerializer
+from .serializers import MessageSerializer,ConversationSerializer,UserSerializer,PdfDocumentSerializer,KnowledgebaseSerializer
 from .utils import getMessage
 from .youtube import readYoutube
 from django.http import JsonResponse
+from rest_framework.parsers import JSONParser
+
 from django.core.exceptions import ValidationError
 from django.core.validators import URLValidator
 import re
@@ -45,6 +47,14 @@ from rest_framework import status
 from django.contrib.auth.decorators import login_required
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.authentication import JWTAuthentication
+from django.core.exceptions import ValidationError
+from rest_framework.parsers import MultiPartParser, FormParser
+from django.core.files.storage import default_storage
+from django.core.validators import URLValidator
+from rest_framework.decorators import parser_classes
+from django.db import transaction
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
 
 
 # Create your views here.
@@ -107,7 +117,7 @@ def signout(request):
 def upload_single_pdf(request):
     if request.method == 'POST':
         try:
-            pdf_file = request.FILES['pdfCover']
+            pdf_file = request.FILES['file']
         except MultiValueDictKeyError:
             return JsonResponse({'upload_failed': 'Please upload a PDF file.'}, status=400)
 
@@ -181,32 +191,106 @@ def store_youtube_url(request):
 
     else:
         return JsonResponse({'error': 'Invalid request method'}, status=405)
-    
 
-"""def upload_pdf(request):
-    if request.method == 'POST':
-        try:
-            pdf_file = request.FILES['pdf']
-        except MultiValueDictKeyError:
-            message = 'Please upload a PDF file.'
-            return render(request, 'authentication/index.html', {'upload_failed': message})
-        
-        try:
-            validate_pdf_file(pdf_file)
-        except ValidationError as e:
-            return render(request, 'authentication/index.html', {'upload_failed': str(e)})
-        
-        pdf_path = default_storage.save('pdf_documents/' + pdf_file.name, pdf_file)
-        user_id = request.session.get('user_id')
-        user = User.objects.filter(id=user_id).first()
-        pdf_doc = PdfDocument.objects.create(user=user, document=pdf_path)
-        request.session['pdf_id'] = pdf_doc.id
-        #request.session['pdf_path'] = pdf_doc.document.path
-        return redirect(reverse('home') + '?upload_success=Upload Successful, Now enter your queries')
-    else:
-        return render(request, 'authentication/index.html', {'error':"error"})
-"""
+
+def index_document(user,document):
+    # Determine the type of the document
+    if document.data['url'].startswith('http'):
+        # This is a URL, so we'll assume it's a YouTube link
+        # You might want to add more robust checking here
+        pinecone_index = readYoutube(user, document)
+        pass
+    elif document.data['url'].endswith('.pdf'):
+        # This is not a URL, so we'll assume it's a file
+        # You might want to add more robust checking here
+        pinecone_index = readFile(user, document)
+        pass
     
+    # Store Pinecone index in cache
+    cache_key = f'pinecone_index:{user.id}:{document.id}'
+    cache.set(cache_key, pinecone_index)
+
+
+
+
+@authentication_classes([JWTAuthentication])
+@api_view(['POST'])
+def create_knowledgebase(request):
+    user = request.user
+
+    # Ensure the name is provided
+    name = request.POST.get('name')
+    if not name:
+        return Response({'detail': 'Knowledge base name is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    with transaction.atomic():
+        # Create the knowledge base
+        knowledge_base = Knowledgebase.objects.create(name=name, user=user)
+
+        # Process the inputs
+        i = 0
+        while True:
+            type = request.POST.get(f'inputs[{i}][type]')
+            if type is None:
+                break
+
+            file = request.FILES.get(f'inputs[{i}][data][file]')
+            url = request.POST.get(f'inputs[{i}][data][url]')
+            
+            # Handle the input based on its type
+            if type == 'YouTube':
+                document_data = {'name': url, 'url': url}
+                document = KnowledgeDocument.objects.create(document_type=type, data=document_data)
+                knowledge_base.documents.add(document)
+                print("Document", document)
+                index_document(user, document)
+            elif type == 'PDF':
+                # The content in this case should be a file
+                if not file:
+                    return Response({'detail': 'PDF file is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+                # Check if file is a valid PDF file here (not included in this code)
+
+                # Save the file and create a Document for it
+                filename = default_storage.save(file.name, file)
+                document_data = {'name': filename, 'url': filename}
+                document = KnowledgeDocument.objects.create(document_type=type, data=document_data)
+                knowledge_base.documents.add(document)
+                print("Document", document)
+                index_document(user, document)
+
+            else:
+                return Response({'detail': 'Invalid input type.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            i += 1
+
+    return Response({'detail': 'Knowledge base created.'}, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_knowledgebases(request):
+    knowledgebases = Knowledgebase.objects.filter(user=request.user).order_by('-timestamp')
+    serializer = KnowledgebaseSerializer(knowledgebases, many=True)
+    return Response(serializer.data)
+
+
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_knowledgebase(request, knowledgebase_id):
+    try:
+        knowledge_base = Knowledgebase.objects.get(id=knowledgebase_id, user=request.user)
+    except Knowledgebase.DoesNotExist:
+        return Response({'detail': 'Knowledge base not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    knowledge_base.delete()
+    return Response({'detail': 'Knowledge base deleted.'}, status=status.HTTP_204_NO_CONTENT)
+
+
+
+
 def validate_pdf_file(file):
     if not file.name.endswith('.pdf'):
         raise ValidationError('Please upload a PDF file.')
@@ -253,10 +337,16 @@ def answer(request):
         print(response)
         return JsonResponse(response_data, status=200)
 
+def stream_response_generator(response):
+    for data in response:
+        yield data
+
+
+
 
 @authentication_classes([JWTAuthentication])
 @api_view(['POST'])
-def chatyt(request):
+def chat_knowledge(request):
     if request.method == "POST":
         data = json.loads(request.body)
         print(f"Received data: {data}") 
@@ -266,24 +356,20 @@ def chatyt(request):
         text = data.get('text')
         user_id = request.user
         conversation = Conversation.objects.get(pk=conversation_id)
-        #print("Youtube",yt_link)
-      
 
-        yt_link_id = conversation.yt_link_id
+        knowledgebase  = conversation.knowledge_base
 
-        print("Youtube2",yt_link_id)
-        if yt_link_id is not None:
-            yt_link = YouTubeLink.objects.get(pk=yt_link_id)
-            print(f"Working with YouTube link: {yt_link.url}")
+        if knowledgebase is not None:
+            print(f"Working with Knowledgebase link: {knowledgebase.name}")
 
-        cache_key = f'pinecone_index_v2:{user_id}:{yt_link_id}'
+        cache_key = f'pinecone_index_v2:{user_id}:{knowledgebase.id}'
         cache_value = cache.get(cache_key)
         pinecone_index = cache_value.get('index', None) if cache_value else None
         namespace = cache_value.get('namespace', None) if cache_value else None
 
         if pinecone_index is None:
             try:
-                vectorstore = Vectorstore.objects.get(user=user_id, youtube_link_id=yt_link_id)
+                vectorstore = Vectorstore.objects.filter(user=user_id, knowledgebase_id=knowledgebase.id).first()
                 pinecone_index = vectorstore.index
                 namespace = vectorstore.namespace
                 cache.set(cache_key, {'index': pinecone_index, 'namespace': namespace})
@@ -293,12 +379,27 @@ def chatyt(request):
         print(text)
         print(str(pinecone_index))
         print(namespace)
-        response = get_response(text, str(pinecone_index),namespace)  #LAST STEP
+        response = get_response(text, str(pinecone_index), namespace)  #LAST STEP
         message_user = Message.objects.create(conversation=conversation, is_user=True, text=text)
         message_bot = Message.objects.create(conversation=conversation, is_user=False, text=response) 
-        response_data = {'output': response}
+        print(type(response))
         print(response)
-        return JsonResponse(response_data, status=200)
+
+        # Send a message to the group
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"chat_{conversation_id}",  # The group name
+            {
+                "type": "chat.message",  # The method name in your consumer
+                "message": response,
+                "username": request.user.username,
+            },
+        )
+
+        return StreamingHttpResponse(stream_response_generator(response),content_type="text/plain", status=200)
+
+
+
 
 
 class PdfDocumentListCreateView(generics.ListCreateAPIView):
@@ -329,12 +430,11 @@ class ConversationListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        conversation = Conversation.objects.filter(user=user)
+        conversation = Conversation.objects.filter(user=user).order_by('-created_at')
         return conversation
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
-
 
 
 
@@ -346,20 +446,13 @@ def create_conversation(request):
     try:
         user = request.user
 
-        pdf_document_id = request.data.get('pdf_document_id', None)
-        yt_link_id = request.data.get('yt_link_id', None)
+        knowledgebase_id = request.data.get('knowledge_base_id', None)
 
-        if yt_link_id is not None:
-            conversation_type = 'yt-chat'
-            yt_link = get_object_or_404(YouTubeLink, id=yt_link_id)
-            conversation = Conversation.objects.create(user=user, conversation_type=conversation_type, yt_link=yt_link)
-        elif pdf_document_id is not None:
-            conversation_type = 'pdf'
-            pdf_document = get_object_or_404(PdfDocument, id=pdf_document_id)
-            conversation = Conversation.objects.create(user=user, conversation_type=conversation_type, pdf_document=pdf_document)
+        if knowledgebase_id is not None:
+            knowledgebase = get_object_or_404(Knowledgebase, id=knowledgebase_id)
+            conversation = Conversation.objects.create(user=user, knowledge_base=knowledgebase)
         else:
-            conversation_type = 'chat'
-            conversation = Conversation.objects.create(user=user, conversation_type=conversation_type)
+            conversation = Conversation.objects.create(user=user)
 
         return JsonResponse({'conversation_id': conversation.id}, status=201)
 

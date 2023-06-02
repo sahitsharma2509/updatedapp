@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     "corsheaders",
     'knox',
     'rest_framework_simplejwt.token_blacklist',
+    'channels',
 ]
 
 MIDDLEWARE = [
@@ -81,14 +82,28 @@ TEMPLATES = [
     },
 ]
 
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels.layers.InMemoryChannelLayer',
+    },
+}
+
+
+
+
 WSGI_APPLICATION = "up_dated.wsgi.application"
+ASGI_APPLICATION = 'up_dated.asgi.application'
 MAX_PDF_SIZE = 1024 * 1024 * 5
 
 # Database
 # https://docs.djangoproject.com/en/4.1/ref/settings/#databases
 
+JWT_AUTH = {
+    'JWT_AUTH_COOKIE': 'JWT',     # the cookie will also be sent on WebSocket connections
+}
+
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=5),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=200),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=10),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
@@ -111,7 +126,7 @@ SIMPLE_JWT = {
     'JTI_CLAIM': 'jti',
 
     'SLIDING_TOKEN_REFRESH_EXP_CLAIM': 'refresh_exp',
-    'SLIDING_TOKEN_LIFETIME': timedelta(minutes=5),
+    'SLIDING_TOKEN_LIFETIME': timedelta(minutes=200),
     'SLIDING_TOKEN_REFRESH_LIFETIME': timedelta(days=1),
 }
 
@@ -120,9 +135,9 @@ DATABASES = {
         "ENGINE": "django.db.backends.postgresql",
         'NAME': 'railway',
         'USER': 'postgres',
-        'PASSWORD': '5Q6a4JT1o2I7f33b7ot6',
-        'HOST': 'containers-us-west-186.railway.app',
-        'PORT': '6055',
+        'PASSWORD': 'pgLIxMivtMJ481a9Nh3r',
+        'HOST': 'containers-us-west-16.railway.app',
+        'PORT': '6630',
     }
 }
 CORS_ALLOWED_ORIGINS = [

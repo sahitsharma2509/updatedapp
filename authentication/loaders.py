@@ -1,3 +1,5 @@
+
+
 from langchain.document_loaders import PyMuPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings.openai import OpenAIEmbeddings
@@ -14,9 +16,10 @@ import logging
 from . models import PdfDocument,Vectorstore
 import uuid
 from langchain.docstore.document import Document 
+from asgiref.sync import sync_to_async
 
 
-llm = OpenAI(temperature=0,verbose=True,streaming=True)
+llm = OpenAI(streaming=True, callbacks=[StreamingStdOutCallbackHandler()], temperature=0)
 
 pinecone.init(
     api_key="53cbabaf-5606-45f9-993b-5363276c6222",  # find at app.pinecone.io
@@ -34,7 +37,7 @@ def get_full_path(file_path):
     return os.path.join(settings.MEDIA_ROOT, file_path)
 
 
-def create_namespace(file_path,name):
+async def create_namespace(file_path,name):
     """
     Creates a namespace in the index for the given file path.
     """
@@ -43,14 +46,15 @@ def create_namespace(file_path,name):
     namespace = name
   
 
-    index_name = embed_doc(file_path,str(index_name),namespace)
+    index_name = await embed_doc(file_path,str(index_name),namespace)
     #Write upsert function. 
     #docsearch = Pinecone.from_documents(texts,embeddings,index_name=index_name) # If it doesn't work use upsert!!!!!!
     #index = pinecone.Index(index_name=index_name)
     return index_name
 
-def embed_doc(file_path,index_name,namespace):
-    embeddings = OpenAIEmbeddings(openai_api_key = "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")
+
+async def embed_doc(file_path,index_name,namespace):
+    embeddings = OpenAIEmbeddings(openai_api_key = "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")
     loader = PyMuPDFLoader(get_full_path(file_path))
     documents = loader.load()
     text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(chunk_size=100, chunk_overlap=20)
@@ -61,7 +65,7 @@ def embed_doc(file_path,index_name,namespace):
 
     return index_name
 
-def get_index(index):
+async def get_index(index):
     cache_key = f"{CACHE_KEY_PREFIX}{index}"
     pinecone_index = cache.get(cache_key)
     if pinecone_index is None:
@@ -77,7 +81,19 @@ def get_index(index):
         cache.set(cache_key, pinecone_index)
     return pinecone_index.index
 
-def get_response(query, pinecone_index ,namespace):
+
+async def query_pinecone(query):
+    # generate embeddings for the query
+    embeddings = OpenAIEmbeddings(openai_api_key = "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")
+    embed_query = embeddings.embed_query(query)
+    # search pinecone index for context passage with the answer
+    
+    return embed_query
+
+
+
+
+async def get_response(query, pinecone_index ,namespace):
     """
     Returns a response to the given query using the given Pinecone index.
     If the Pinecone index is not initialized, it raises a ValueError.
@@ -85,7 +101,7 @@ def get_response(query, pinecone_index ,namespace):
     
     try:
         index = pinecone.Index(index_name=pinecone_index)
-        xq = query_pinecone(query)
+        xq = await query_pinecone(query)
 
         xc = index.query(xq,top_k=5, include_metadata=True,namespace=namespace)
         # Use OpenAI API to generate a response
@@ -109,15 +125,8 @@ def get_response(query, pinecone_index ,namespace):
         logger.exception(f"Error getting response: {e}")
         return None
 
-def query_pinecone(query):
-    # generate embeddings for the query
-    embeddings = OpenAIEmbeddings(openai_api_key = "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")
-    embed_query = embeddings.embed_query(query)
-    # search pinecone index for context passage with the answer
-    
-    return embed_query
 
-def readFile(user, doc):
+async def readFile(user, doc):
     cache_key = f"pinecone_index_v2:{user.id}:{doc.id}"
     pinecone_index = cache.get(cache_key)    
     if pinecone_index is None:
@@ -131,7 +140,7 @@ def readFile(user, doc):
         
         if created:
             pinecone_index.save()  # Save the object to the database first
-            pinecone_index.index = create_namespace(pdf_document.document.path,pdf_document.name)  # Assign the new UUID value
+            pinecone_index.index = await create_namespace(pdf_document.document.path,pdf_document.name)  # Assign the new UUID value
             pinecone_index.save() 
         
         cache.set(cache_key, {'index': pinecone_index.index, 'namespace': pdf_document.name})
