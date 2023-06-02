@@ -11,13 +11,14 @@ import time
 
 
 import os 
-
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+PINECONE_API_KEY = os.getenv("Pinecone_API")
+PINECONE_ENVIRONMENT = os.getenv("Pinecone_env")
 
 os.environ['GOOGLE_CSE_ID'] = "71569d2dba74540d9"
 os.environ['GOOGLE_API_KEY']="AIzaSyAIqeLS5pxxx2iq52GkV3g_1AZzSwdRxa8"
 os.environ['SERPER_API_KEY']='3d856dbf3811b58136f49fd8ccfcac3c80bd3f22bacff9f9fec7f10fdcee11c3'
 os.environ["WOLFRAM_ALPHA_APPID"] = "X4LW2T-EXEGW5E7T6"
-os.environ["OPENAI_API_KEY"] = "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"
 from langchain.utilities.wolfram_alpha import WolframAlphaAPIWrapper
 
 search = GoogleSearchAPIWrapper()

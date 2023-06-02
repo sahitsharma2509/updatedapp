@@ -1,4 +1,7 @@
-
+import os
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+PINECONE_API_KEY = os.getenv("Pinecone_API")
+PINECONE_ENVIRONMENT = os.getenv("Pinecone_env")
 
 from langchain.document_loaders import PyMuPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -10,7 +13,7 @@ import pinecone
 from django.http import StreamingHttpResponse
 from langchain.chains.question_answering import load_qa_chain
 from django.conf import settings
-import os
+
 from django.core.cache import cache
 import logging
 from . models import PdfDocument,Vectorstore,YouTubeLink , KnowledgeDocument
@@ -19,12 +22,11 @@ from langchain.docstore.document import Document
 from langchain.document_loaders import YoutubeLoader
 
 
-
 llm = OpenAI(streaming=True, callbacks=[StreamingStdOutCallbackHandler()], temperature=0)
 
 pinecone.init(
-    api_key="53cbabaf-5606-45f9-993b-5363276c6222",  # find at app.pinecone.io
-    environment="us-east-1-aws"  # next to api key in console
+    api_key=PINECONE_API_KEY,  # find at app.pinecone.io
+    environment=PINECONE_ENVIRONMENT  # next to api key in console
 )
 
 import logging
@@ -48,7 +50,7 @@ def create_namespace_from_youtube(link,name):
     return index_name
 
 def embed_doc(link,index_name,namespace):
-    embeddings = OpenAIEmbeddings(openai_api_key = "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")
+    embeddings = OpenAIEmbeddings(openai_api_key = OPENAI_API_KEY)
     loader = YoutubeLoader.from_youtube_url(link)
     documents = loader.load()
     text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(chunk_size=100, chunk_overlap=20)
@@ -109,7 +111,7 @@ def get_response(query, pinecone_index ,namespace):
 
 def query_pinecone(query):
     # generate embeddings for the query
-    embeddings = OpenAIEmbeddings(openai_api_key = "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")
+    embeddings = OpenAIEmbeddings(openai_api_key = OPENAI_API_KEY)
     embed_query = embeddings.embed_query(query)
     # search pinecone index for context passage with the answer
     

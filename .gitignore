@@ -10,6 +10,8 @@ p1.ipynb
 *.pyc
 myenv/
 *.ipynb
+.env
+
 
 
 
