@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "authentication",
+    "cacheops",
     'rest_framework',
     "corsheaders",
     'knox',
@@ -97,6 +98,15 @@ MAX_PDF_SIZE = 1024 * 1024 * 5
 
 # Database
 # https://docs.djangoproject.com/en/4.1/ref/settings/#databases
+
+CACHEOPS = {
+    'authentication.Knowledgebase': {'ops': 'all', 'timeout': 60*15},
+    'authentication.Conversation': {'ops': 'all', 'timeout': 60*15},
+
+}
+
+
+
 
 JWT_AUTH = {
     'JWT_AUTH_COOKIE': 'JWT',     # the cookie will also be sent on WebSocket connections
@@ -169,14 +179,21 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 CACHES = {
-    "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": "redis://127.0.0.1:6379/1",
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient"
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': 'redis://127.0.0.1:6379/1',
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+            'SOCKET_CONNECT_TIMEOUT': 5,  # in seconds
         },
     }
 }
+
+
+
+
+
+
 
 
 # Internationalization

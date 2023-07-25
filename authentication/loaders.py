@@ -1,28 +1,26 @@
 import os
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-PINECONE_API_KEY = os.getenv("Pinecone_API")
-PINECONE_ENVIRONMENT = os.getenv("Pinecone_env")
+from decouple import config
 
-from langchain.document_loaders import PyMuPDFLoader
+OPENAI_API_KEY = config("OPENAI_API_KEY")
+
+PINECONE_API_KEY = config("Pinecone_API")
+PINECONE_ENVIRONMENT = config("Pinecone_env")
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.vectorstores import Pinecone
 from langchain.llms import OpenAI
-from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 import pinecone
-from django.http import StreamingHttpResponse
-from langchain.chains.question_answering import load_qa_chain
 from django.conf import settings
-
-from django.core.cache import cache
+from langchain.chains.mapreduce import MapReduceChain
 import logging
-from . models import PdfDocument,Vectorstore
+from . models import Vectorstore,KnowledgeDocument,Chunk
 import uuid
-from langchain.docstore.document import Document 
-from asgiref.sync import sync_to_async
-
-
-llm = OpenAI(streaming=True, callbacks=[StreamingStdOutCallbackHandler()], temperature=0)
+from langchain.chains.summarize import load_summarize_chain
+from langchain.document_loaders import YoutubeLoader,UnstructuredURLLoader,UnstructuredPDFLoader, PyMuPDFLoader, PDFPlumberLoader
+from langchain.document_loaders.generic import GenericLoader
+from langchain.document_loaders.blob_loaders.youtube_audio import YoutubeAudioLoader
+from .parsers import DeepgramParser
+llm = OpenAI(temperature=0)
 
 pinecone.init(
     api_key=PINECONE_API_KEY ,  # find at app.pinecone.io
@@ -30,6 +28,8 @@ pinecone.init(
 )
 
 logger = logging.getLogger(__name__)
+
+os.environ["PATH"] += os.pathsep + 'C:/Users/Sahit/ffmpeg-2023-06-26-git-285c7f6f6b-essentials_build/bin'
 
 CACHE_KEY_PREFIX = "pinecone_index:"
 
@@ -40,117 +40,70 @@ def get_full_path(file_path):
     return os.path.join(settings.MEDIA_ROOT, file_path)
 
 
-async def create_namespace(file_path,name):
-    """
-    Creates a namespace in the index for the given file path.
-    """
-    index_name = "test"
 
-    namespace = name
-  
+def get_loader(document_type, url=None, file=None):
+    loaders = {
+        'YouTube': lambda url: GenericLoader(YoutubeAudioLoader([url], settings.MEDIA_ROOT), DeepgramParser()),
+        'PDF': PDFPlumberLoader,
+        'Web': UnstructuredURLLoader,
+        # Add other document types and their loaders here...
+    }
 
-    index_name = await embed_doc(file_path,str(index_name),namespace)
-    #Write upsert function. 
-    #docsearch = Pinecone.from_documents(texts,embeddings,index_name=index_name) # If it doesn't work use upsert!!!!!!
-    #index = pinecone.Index(index_name=index_name)
-    return index_name
+    loader_func = loaders.get(document_type)
+    if not loader_func:
+        raise ValueError(f"No loader found for document type {document_type}")
 
+    if document_type == "YouTube":
+        return loader_func(url)
+    else:
+        return loader_func(file)
 
-async def embed_doc(file_path,index_name,namespace):
-    embeddings = OpenAIEmbeddings(openai_api_key = OPENAI_API_KEY)
-    loader = PyMuPDFLoader(get_full_path(file_path))
+def load_and_split_documents(loader):
     documents = loader.load()
     text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(chunk_size=100, chunk_overlap=20)
     texts = text_splitter.split_documents(documents)
-    print(texts)
-    db = Pinecone.from_documents(texts, embeddings,index_name = index_name,namespace=namespace)
-    print(db)
+    
+    return documents, texts
 
-    return index_name
+def run_summary_chain(documents):
+    summary_chain = load_summarize_chain(llm, chain_type="map_reduce")
+    summary = summary_chain.run(documents)
+    print(f"Documents input: {documents}")  # DEBUGGING
+    print(f"Generated summary by run_summary_chain: {summary}")  # DEBUGGING
+    return summary
 
-async def get_index(index):
-    cache_key = f"{CACHE_KEY_PREFIX}{index}"
-    pinecone_index = cache.get(cache_key)
-    if pinecone_index is None:
-        try:
-            pinecone_index = Vectorstore.objects.get(index=index)
-        except Vectorstore.DoesNotExist:
-            return None
-        
-        if not pinecone_index.index:
-            pinecone_index.index = index
-            pinecone_index.save()
-
-        cache.set(cache_key, pinecone_index)
-    return pinecone_index.index
+class IndexingContext:
+    def __init__(self, user, namespace, knowledgebase, document, texts):
+        self.user = user
+        self.namespace = namespace
+        self.knowledgebase = knowledgebase
+        self.document = document
+        self.texts = texts
+        self.index_name = 'test'  
 
 
-async def query_pinecone(query):
-    # generate embeddings for the query
+def index_document(ctx: IndexingContext):
+    # Generate embeddings
     embeddings = OpenAIEmbeddings(openai_api_key = OPENAI_API_KEY)
-    embed_query = embeddings.embed_query(query)
-    # search pinecone index for context passage with the answer
-    
-    return embed_query
+    # Generate UUIDs for each text
+    ids = [str(uuid.uuid4()) for _ in range(len(ctx.texts))]
 
+    # List of documents
+    texts = ctx.texts
 
+    print(texts)
 
+    # Add texts to Pinecone
+    print("texts", texts)
+    pinecone_index = Pinecone.from_documents(documents=texts, embedding=embeddings, ids=ids, index_name=ctx.index_name, namespace = ctx.knowledgebase.namespace)
 
-async def get_response(query, pinecone_index ,namespace):
-    """
-    Returns a response to the given query using the given Pinecone index.
-    If the Pinecone index is not initialized, it raises a ValueError.
-    """
-    
-    try:
-        index = pinecone.Index(index_name=pinecone_index)
-        xq = await query_pinecone(query)
+    # Create Vectorstore entry in the database
+    vectorstore = Vectorstore.objects.create(user=ctx.user, knowledgebase=ctx.knowledgebase, document=ctx.document, index=ctx.index_name)
 
-        xc = index.query(xq,top_k=5, include_metadata=True,namespace=namespace)
-        # Use OpenAI API to generate a response
-        test2 = []
-        for i in xc['matches']:
-            metadata = i['metadata']
-            text_value = metadata.pop('text', None)
-            if text_value is not None:
-                test2.append(Document(page_content=text_value,metadata=metadata,lookup_index=0))
-
-
-
-        chain = load_qa_chain(llm, chain_type="stuff")
-        response = chain.run(input_documents=test2, question=query)
-        return response
-    
-    except AttributeError as e:
-        logger.exception(f"Error accessing Pinecone index: {e}")
-        return None
-    except Exception as e:
-        logger.exception(f"Error getting response: {e}")
-        return None
-
-
-async def readFile(user, doc):
-    cache_key = f"pinecone_index_v2:{user.id}:{doc.id}"
-    pinecone_index = cache.get(cache_key)    
-    if pinecone_index is None:
-        try:
-            pdf_document = PdfDocument.objects.get(user=user,pk=doc.id)
-
-        except PdfDocument.DoesNotExist:
-            return None
-        pinecone_index, created = Vectorstore.objects.get_or_create(user=user, document=doc,namespace=pdf_document.name) #This line gives an error
-        
-        
-        if created:
-            pinecone_index.save()  # Save the object to the database first
-            pinecone_index.index = await create_namespace(pdf_document.document.path,pdf_document.name)  # Assign the new UUID value
-            pinecone_index.save() 
-        
-        cache.set(cache_key, {'index': pinecone_index.index, 'namespace': pdf_document.name})
-        index = pinecone_index.index
-    
-    return index
-
-
-
+    # Create Chunk entries in the database
+    for i, doc in enumerate(ctx.texts):
+        chunk_uuid = ids[i]
+        content = doc.page_content  # Use page_content or another appropriate attribute
+        metadata = doc.metadata
+        Chunk.objects.create(vectorstore=vectorstore, uuid=chunk_uuid, content = content, metadata = metadata)
 

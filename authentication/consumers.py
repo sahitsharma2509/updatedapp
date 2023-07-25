@@ -1,5 +1,4 @@
 import json
-from .loaders import readFile,get_response
 from channels.generic.websocket import AsyncWebsocketConsumer
 from asgiref.sync import sync_to_async
 from django.core.cache import cache
@@ -12,7 +11,9 @@ from channels.db import database_sync_to_async
 from django.contrib.auth import get_user_model
 from django.conf import settings
 from rest_framework_simplejwt.tokens import AccessToken
-from .loaders import get_response
+from .response import get_response,generate_title
+import base64
+from asgiref.sync import sync_to_async
 
 
 class ChatConsumer(AsyncWebsocketConsumer):
@@ -112,13 +113,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if pinecone_index is None:
             vectorstore = await self.get_vectorstore(self.user.id, knowledgebase.id)
             pinecone_index = vectorstore.index
-            namespace = vectorstore.namespace
+            namespace = vectorstore.knowledgebase.namespace
             cache.set(cache_key, {'index': pinecone_index, 'namespace': namespace})
 
     # Get the response
-        response = await get_response(text, str(pinecone_index), namespace)
+        response = get_response(text, str(pinecone_index), namespace)
+        response_encoded = base64.b64encode(response.encode()).decode()
+        print(response_encoded)
 
-        # Get the response
+
+    # Generate title 
+
+        if not conversation.title:
+            title = generate_title(text)
+            print("Title", title)
+
+            conversation.title = title
+
+            # Save the updated conversation back to the database
+            await sync_to_async(conversation.save)()
 
  
 
@@ -126,16 +139,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
         message_user = await self.create_message(conversation, True, text)
         message_bot = await self.create_message(conversation, False, response)
 
+     
+
         await self.channel_layer.group_send(
-        self.room_group_name,
-        {
-            "type": "chat.message",
-            "message": response,
-            "username": self.user.username,
-            "is_user": False,
-        },
-    )
-    
+            self.room_group_name,
+            {
+                "type": "chat.message",
+                "message": response_encoded,
+                "username": self.user.username,
+                "is_user": False,
+            },
+        )
+
+
     
     # Receive message from room group
     async def chat_message(self, event):

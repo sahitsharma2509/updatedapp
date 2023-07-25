@@ -1,7 +1,8 @@
 import os
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-PINECONE_API_KEY = os.getenv("Pinecone_API")
-PINECONE_ENVIRONMENT = os.getenv("Pinecone_env")
+from decouple import config
+OPENAI_API_KEY = config("OPENAI_API_KEY")
+PINECONE_API_KEY = config("Pinecone_API")
+PINECONE_ENVIRONMENT =config("Pinecone_env")
 
 from langchain.document_loaders import PyMuPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -16,7 +17,7 @@ from django.conf import settings
 
 from django.core.cache import cache
 import logging
-from . models import PdfDocument,Vectorstore,YouTubeLink , KnowledgeDocument
+from . models import Vectorstore, KnowledgeDocument
 import uuid
 from langchain.docstore.document import Document 
 from langchain.document_loaders import YoutubeLoader
@@ -53,29 +54,17 @@ def embed_doc(link,index_name,namespace):
     embeddings = OpenAIEmbeddings(openai_api_key = OPENAI_API_KEY)
     loader = YoutubeLoader.from_youtube_url(link)
     documents = loader.load()
+    print(documents)
     text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(chunk_size=100, chunk_overlap=20)
     texts = text_splitter.split_documents(documents)
     print(texts)
     db = Pinecone.from_documents(texts, embeddings,index_name = index_name,namespace=namespace)
+    
     print(db)
 
     return index_name
 
-def get_index(index):
-    cache_key = f"{CACHE_KEY_PREFIX}{index}"
-    pinecone_index = cache.get(cache_key)
-    if pinecone_index is None:
-        try:
-            pinecone_index = Vectorstore.objects.get(index=index)
-        except Vectorstore.DoesNotExist:
-            return None
-        
-        if not pinecone_index.index:
-            pinecone_index.index = index
-            pinecone_index.save()
 
-        cache.set(cache_key, pinecone_index)
-    return pinecone_index.index
 
 def get_response(query, pinecone_index ,namespace):
     """
@@ -136,6 +125,8 @@ def readYoutube(user, document):
             pinecone_index.save()  # Save the object to the database first
             pinecone_index.index = create_namespace_from_youtube(youtube_document.data['url'], youtube_document.data['url'])  # Assign the new UUID value
             pinecone_index.save()
+
+            print("Index",type(pinecone_index.index))
 
         cache.set(cache_key, {'index': pinecone_index.index, 'namespace': youtube_document.data['url']})
         logger.info(f'Cache updated for user {user.id} and document id {document.id}')

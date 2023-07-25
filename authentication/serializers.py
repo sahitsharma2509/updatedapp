@@ -1,21 +1,9 @@
 from rest_framework.serializers import ModelSerializer
-from .models import Message,Conversation, PdfDocument, YouTubeLink, Knowledgebase, KnowledgeDocument
+from .models import Message,Conversation,  Knowledgebase, KnowledgeDocument,UserProfile
 from django.contrib.auth.models import User
 from rest_framework import serializers
 
 
-
-
-
-class PdfDocumentSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = PdfDocument
-        fields = ('id', 'document', 'timestamp', 'user','name')
-
-class YouTubeLinkSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = YouTubeLink
-        fields = ('id', 'url', 'timestamp', 'user')
 
 class MessageSerializer(serializers.ModelSerializer):
     class Meta:
@@ -31,16 +19,26 @@ class UserSerializer(ModelSerializer):
         print("UserSerializer.to_representation called")
         return super().to_representation(instance)
 
+class UserProfileSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)  # Make 'user' field read-only
+
+    class Meta:
+        model = UserProfile
+        fields = ('user', 'avatar')
+
+
 
 from rest_framework import serializers
 from .models import Knowledgebase
 
 
 
+
+
 class KnowledgeDocumentSerializer(serializers.ModelSerializer):
     class Meta:
         model = KnowledgeDocument
-        fields = ['id', 'document_type', 'data']
+        fields = ['id', 'document_type', 'data', 'content']
 
 
 class KnowledgebaseSerializer(serializers.ModelSerializer):

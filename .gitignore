@@ -11,7 +11,8 @@ p1.ipynb
 myenv/
 *.ipynb
 .env
-
+*.pdf
+langchain
 
 
 

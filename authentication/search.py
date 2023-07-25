@@ -9,11 +9,11 @@ from langchain.schema import messages_from_dict, messages_to_dict
 from langchain.memory import ChatMessageHistory
 import time
 
-
+from decouple import config
 import os 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-PINECONE_API_KEY = os.getenv("Pinecone_API")
-PINECONE_ENVIRONMENT = os.getenv("Pinecone_env")
+OPENAI_API_KEY = config("OPENAI_API_KEY")
+PINECONE_API_KEY = config("Pinecone_API")
+PINECONE_ENVIRONMENT = config("Pinecone_env")
 
 os.environ['GOOGLE_CSE_ID'] = "71569d2dba74540d9"
 os.environ['GOOGLE_API_KEY']="AIzaSyAIqeLS5pxxx2iq52GkV3g_1AZzSwdRxa8"

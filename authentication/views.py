@@ -7,13 +7,13 @@ from up_dated import settings
 from django.contrib.sites.shortcuts import get_current_site
 from django.template.loader import render_to_string
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
-from django.utils.encoding import force_bytes, force_str
+from django.utils.encoding import force_bytes
 from django.contrib.auth import authenticate, login, logout
-from . tokens import generate_token
 from .search import qsearch
-from .loaders import readFile,get_response
+from .loaders import index_document,get_loader,load_and_split_documents,run_summary_chain,IndexingContext
+from .response import get_response
 from .baby_agent import get_baby_agi_response
-from authentication.models import Conversation ,PdfDocument , Message , Vectorstore , YouTubeLink , KnowledgeDocument , Knowledgebase
+from authentication.models import Conversation  , Message , Vectorstore  , KnowledgeDocument , Knowledgebase, KnowledgeBaseSummary, UserProfile
 from django.http import HttpResponseServerError,StreamingHttpResponse
 import datetime
 from django.core.files.storage import default_storage
@@ -28,12 +28,12 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework import generics
 from rest_framework.response import Response
-from .serializers import MessageSerializer,ConversationSerializer,UserSerializer,PdfDocumentSerializer,KnowledgebaseSerializer
+from .serializers import MessageSerializer,ConversationSerializer,UserSerializer,KnowledgebaseSerializer, UserProfileSerializer,KnowledgeDocumentSerializer
 from .utils import getMessage
 from .youtube import readYoutube
 from django.http import JsonResponse
 from rest_framework.parsers import JSONParser
-
+from cacheops import cached_as,invalidate_model
 from django.core.exceptions import ValidationError
 from django.core.validators import URLValidator
 import re
@@ -55,11 +55,56 @@ from rest_framework.decorators import parser_classes
 from django.db import transaction
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
+from django.core.exceptions import ObjectDoesNotExist
+from rest_framework.pagination import PageNumberPagination
+from django_redis import get_redis_connection
+from uuid import uuid4
+from django.http import FileResponse
+import requests
+import os
+from django.core.files import File
 
 
 # Create your views here.
 def home(request):
     return render(request, "authentication/index.html")
+
+
+def text_to_speech(request):
+    CHUNK_SIZE = 1024
+    url = "https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM/stream"
+
+    headers = {
+      "Accept": "audio/mpeg",
+      "Content-Type": "application/json",
+      "xi-api-key": "655568d6c24d8fb6e9d3834712a0504c"
+    }
+
+    # Assume 'text' is passed as a GET parameter
+    text = request.GET.get('text', 'Hello world')
+    data = {
+      "text": text,
+      "model_id": "eleven_monolingual_v1",
+      "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.5
+      }
+    }
+
+    response = requests.post(url, json=data, headers=headers, stream=True)
+
+    filename = 'output.mp3'
+    with open(filename, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+            if chunk:
+                f.write(chunk)
+    
+    # Assuming files are in a directory named 'media' in your project
+    file_path = os.path.join('media', filename)
+
+    # Serve file as attachment so it can be downloaded
+    response = FileResponse(open(file_path, 'rb'), as_attachment=True)
+    return response
 
 @csrf_exempt
 def signup(request):
@@ -112,112 +157,12 @@ def signout(request):
     return redirect('home')
 
 
-@authentication_classes([JWTAuthentication])
-@api_view(['POST'])
-def upload_single_pdf(request):
-    if request.method == 'POST':
-        try:
-            pdf_file = request.FILES['file']
-        except MultiValueDictKeyError:
-            return JsonResponse({'upload_failed': 'Please upload a PDF file.'}, status=400)
-
-        try:
-            validate_pdf_file(pdf_file)
-        except ValidationError as e:
-            return JsonResponse({'upload_failed': str(e)}, status=400)
-
-        pdf_path = default_storage.save('pdf_documents/' + pdf_file.name, pdf_file)
-        user = request.user
-        user_id = user.id
-
-        user = User.objects.filter(id=user_id).first()
-        # Truncate file name if it's longer than 50 characters
-        file_name = pdf_file.name[:50]
-
-
-        pdf_doc = PdfDocument.objects.create(user=user, document=pdf_path, name=file_name)
-
-        request.session['pdf_document_id'] = pdf_doc.id
-        index_name = "test"
-
-        # Process and embed the PDF file
-        pinecone_index = readFile(user, pdf_doc)
-
-
-       
-
-        # Store Pinecone index in cache
-        cache_key = f'pinecone_index:{user.id}:{pdf_doc.id}'
-        cache.set(cache_key, pinecone_index)
-
-        return JsonResponse({'upload_success': 'Upload Successful','pdf_document_id': pdf_doc.id})
-
-    else:
-        return JsonResponse({'error': 'Invalid request method'}, status=405)
-
-@authentication_classes([JWTAuthentication])
-@api_view(['POST'])
-def store_youtube_url(request):
-    if request.method == 'POST':
-        try:
-            url = request.data.get('url')
-        except KeyError:
-            return JsonResponse({'error': 'No URL provided.'}, status=400)
-
-        # Validate URL
-        validate = URLValidator()
-        try:
-            validate(url)
-        except ValidationError as e:
-            return JsonResponse({'error': str(e)}, status=400)
-
-        # Check if it's a YouTube URL
-        youtube_pattern = r'(https?://)?(www\.)?(youtube\.com|youtu\.?be)/.+$'
-        if not re.match(youtube_pattern, url):
-            return JsonResponse({'error': 'Invalid YouTube URL.'}, status=400)
-
-        user = request.user
-        yt_link = YouTubeLink.objects.create(user=user, url=url)
-
-        # Update Pinecone index here based on the YouTube URL
-        # You will have to define this function
-        pinecone_index = readYoutube(user, yt_link)
-
-        # Store Pinecone index in cache
-        cache_key = f'pinecone_index:{user.id}:{yt_link.id}'
-        cache.set(cache_key, pinecone_index)
-
-        return JsonResponse({'success': 'YouTube URL stored successfully', 'yt_link_id': yt_link.id})
-
-    else:
-        return JsonResponse({'error': 'Invalid request method'}, status=405)
-
-
-def index_document(user,document):
-    # Determine the type of the document
-    if document.data['url'].startswith('http'):
-        # This is a URL, so we'll assume it's a YouTube link
-        # You might want to add more robust checking here
-        pinecone_index = readYoutube(user, document)
-        pass
-    elif document.data['url'].endswith('.pdf'):
-        # This is not a URL, so we'll assume it's a file
-        # You might want to add more robust checking here
-        pinecone_index = readFile(user, document)
-        pass
-    
-    # Store Pinecone index in cache
-    cache_key = f'pinecone_index:{user.id}:{document.id}'
-    cache.set(cache_key, pinecone_index)
-
-
 
 
 @authentication_classes([JWTAuthentication])
 @api_view(['POST'])
 def create_knowledgebase(request):
     user = request.user
-
     # Ensure the name is provided
     name = request.POST.get('name')
     if not name:
@@ -225,7 +170,8 @@ def create_knowledgebase(request):
 
     with transaction.atomic():
         # Create the knowledge base
-        knowledge_base = Knowledgebase.objects.create(name=name, user=user)
+        namespace = str(uuid4())
+        knowledge_base = Knowledgebase.objects.create(name=name, user=user, namespace=namespace)
 
         # Process the inputs
         i = 0
@@ -237,43 +183,43 @@ def create_knowledgebase(request):
             file = request.FILES.get(f'inputs[{i}][data][file]')
             url = request.POST.get(f'inputs[{i}][data][url]')
             
-            # Handle the input based on its type
-            if type == 'YouTube':
-                document_data = {'name': url, 'url': url}
-                document = KnowledgeDocument.objects.create(document_type=type, data=document_data)
-                knowledge_base.documents.add(document)
-                print("Document", document)
-                index_document(user, document)
-            elif type == 'PDF':
-                # The content in this case should be a file
-                if not file:
-                    return Response({'detail': 'PDF file is required.'}, status=status.HTTP_400_BAD_REQUEST)
+            # Get the loader based on the document type
+            loader = get_loader(document_type=type, url=url, file=file)
+            documents, texts = load_and_split_documents(loader)
+            
+            # Create a KnowledgeDocument and add it to the knowledge base
+            document_data = {'name': url or file.name, 'url': url or file.name}
+            document = KnowledgeDocument.objects.create(document_type=type, data=document_data)
+            knowledge_base.documents.add(document)
+            
+            # Index the document
+           
+            context = IndexingContext(user, namespace, knowledge_base, document, texts)
+            index_document(context)
 
-                # Check if file is a valid PDF file here (not included in this code)
-
-                # Save the file and create a Document for it
-                filename = default_storage.save(file.name, file)
-                document_data = {'name': filename, 'url': filename}
-                document = KnowledgeDocument.objects.create(document_type=type, data=document_data)
-                knowledge_base.documents.add(document)
-                print("Document", document)
-                index_document(user, document)
-
-            else:
-                return Response({'detail': 'Invalid input type.'}, status=status.HTTP_400_BAD_REQUEST)
+            summary = run_summary_chain(documents)
+            KnowledgeBaseSummary.objects.create(knowledgebase=knowledge_base, summary=summary)
 
             i += 1
 
+    invalidate_model(knowledge_base)
     return Response({'detail': 'Knowledge base created.'}, status=status.HTTP_201_CREATED)
+
+
+@cached_as(Knowledgebase, timeout=60*15)
+def get_knowledgebases_data(user):
+    knowledgebases = Knowledgebase.objects.filter(user=user).order_by('-timestamp')
+    serializer = KnowledgebaseSerializer(knowledgebases, many=True)
+    return serializer.data
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_knowledgebases(request):
-    knowledgebases = Knowledgebase.objects.filter(user=request.user).order_by('-timestamp')
-    serializer = KnowledgebaseSerializer(knowledgebases, many=True)
-    return Response(serializer.data)
-
+    # We fetch the data (this step is cached)
+    data = get_knowledgebases_data(request.user)
+    # Then we wrap it in a Response object and return it
+    return Response(data)
 
 
 
@@ -288,6 +234,16 @@ def delete_knowledgebase(request, knowledgebase_id):
     knowledge_base.delete()
     return Response({'detail': 'Knowledge base deleted.'}, status=status.HTTP_204_NO_CONTENT)
 
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_conversation(request, conversation_id):
+    try:
+        conversation = Conversation.objects.get(id=conversation_id, user=request.user)
+    except Conversation.DoesNotExist:
+        return Response({'detail': 'Conversation not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    conversation.delete()
+    return Response({'detail': 'Conversation deleted.'}, status=status.HTTP_204_NO_CONTENT)
 
 
 
@@ -298,44 +254,6 @@ def validate_pdf_file(file):
         raise ValidationError(f"File size must be less than {settings.MAX_PDF_SIZE/1000} KB.")
     
 
-@authentication_classes([JWTAuthentication])
-@api_view(['POST'])
-def answer(request):
-    if request.method == "POST":
-        data = json.loads(request.body)
-        print(f"Received data: {data}") 
-        conversation_id = data.get('conversation')
-        is_user = data.get('is_user')
-        text = data.get('text')
-        user_id = request.user
-        conversation = Conversation.objects.get(pk=conversation_id)
-        pdf_id = conversation.pdf_document
-        print("PDF_id",pdf_id)
-        # Check if Pinecone index object is already in cache
-        cache_key = f'pinecone_index_v2:{user_id}:{pdf_id}'
-        cache_value = cache.get(cache_key)
-        pinecone_index = cache_value.get('index', None) if cache_value else None
-        namespace = cache_value.get('namespace', None) if cache_value else None
-        if pinecone_index is None:
-            try:
-                vectorstore = Vectorstore.objects.get(user=user_id, document_id=pdf_id)
-                pinecone_index = vectorstore.index
-                namespace = vectorstore.namespace
-                cache.set(cache_key, {'index': pinecone_index, 'namespace': namespace})
-
-
-            except Vectorstore.DoesNotExist:
-                # Handle the case where the Vectorstore does not exist
-                pass
-        print(text)
-        print(str(pinecone_index))
-        print(namespace)
-        response = get_response(text, str(pinecone_index),namespace)  #LAST STEP
-        message_user = Message.objects.create(conversation=conversation, is_user=True, text=text)
-        message_bot = Message.objects.create(conversation=conversation, is_user=False, text=response) 
-        response_data = {'output': response}
-        print(response)
-        return JsonResponse(response_data, status=200)
 
 def stream_response_generator(response):
     for data in response:
@@ -399,16 +317,6 @@ def chat_knowledge(request):
         return StreamingHttpResponse(stream_response_generator(response),content_type="text/plain", status=200)
 
 
-
-
-
-class PdfDocumentListCreateView(generics.ListCreateAPIView):
-    queryset = PdfDocument.objects.all()
-    serializer_class = PdfDocumentSerializer
-    permission_classes = [IsAuthenticated]
-
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
     
 class MessageListView(generics.ListAPIView):
     serializer_class = MessageSerializer
@@ -423,34 +331,66 @@ class MessageListView(generics.ListAPIView):
         return getMessage(request, conversation_id)
 
 
-
-class ConversationListCreateView(generics.ListCreateAPIView):
+class ConversationListView(generics.ListAPIView):
     serializer_class = ConversationSerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = PageNumberPagination
+    pagination_class.page_size = 10
 
     def get_queryset(self):
         user = self.request.user
-        conversation = Conversation.objects.filter(user=user).order_by('-created_at')
-        return conversation
+        return Conversation.objects.filter(user=user).order_by('-created_at')
 
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+    def list(self, request, *args, **kwargs):
+        page_number = request.query_params.get('page') or '1'
+        cache_key = f'conversations:{request.user.id}:page:{page_number}'
+        print(f"Looking up key: {cache_key}")  # Add this line
+        data = cache.get(cache_key)
+
+        
+        if not data:
+            queryset = self.filter_queryset(self.get_queryset())
+            page = self.paginate_queryset(queryset)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                data = self.get_paginated_response(serializer.data).data
+            else:
+                serializer = self.get_serializer(queryset, many=True)
+                data = serializer.data
 
 
+        return Response(data)
 
+    
 
 
 @authentication_classes([JWTAuthentication])
 @api_view(['POST'])
 def create_conversation(request):
+    print("create_conversation called")  
     try:
         user = request.user
-
         knowledgebase_id = request.data.get('knowledge_base_id', None)
 
         if knowledgebase_id is not None:
             knowledgebase = get_object_or_404(Knowledgebase, id=knowledgebase_id)
             conversation = Conversation.objects.create(user=user, knowledge_base=knowledgebase)
+
+            # After the conversation is created, get the corresponding KnowledgeBaseSummary
+            try:
+                summary = KnowledgeBaseSummary.objects.get(knowledgebase_id=knowledgebase_id)
+                print("Summary",summary)
+            except ObjectDoesNotExist:
+                # Handle the case when there's no summary for this knowledgebase
+                summary = None
+
+            # If there is a summary, create an initial bot message
+            if summary:
+                initial_message = Message(conversation=conversation, 
+                                          text=summary.summary, 
+                                          is_user=False)
+                initial_message.save()
+
         else:
             conversation = Conversation.objects.create(user=user)
 
@@ -458,7 +398,6 @@ def create_conversation(request):
 
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=500)
-
 
 
 
@@ -521,6 +460,68 @@ def baby_agi_message(request):
 
     except Exception as e:
         return JsonResponse({"status": "error", "message": str(e)}, status=500)
+    
+
+
+class FileUploadView(APIView):
+    def post(self, request, *args, **kwargs):
+        file = request.FILES['file']
+        print("Received file: ", file.name)  # Print received file name
+        file_name = default_storage.save(file.name, file)
+        print("Saved file as: ", file_name)  # Print saved file name
+
+        content_type = file.content_type
+        print("File content type: ", content_type)  # Print content type of file
+        full_file_path = os.path.join(settings.MEDIA_ROOT, file_name)
+
+        conversation_id = request.POST.get('conversation_id')
+        print(conversation_id)
+        conversation = Conversation.objects.get(id=conversation_id)
+        knowledgebase = conversation.knowledge_base
+
+
+        if content_type == 'application/pdf':
+            document_type = 'PDF'
+        elif content_type == 'text/plain':
+            document_type = 'text'
+        elif content_type in ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword']:
+            document_type = 'docx'
+        else:
+            return Response({"error": "Invalid file type."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Prepare data for KnowledgeDocument instance
+        data = {
+            "url": file_name,
+            "name": file.name
+        }
+
+        # Create KnowledgeDocument instance
+        document = KnowledgeDocument.objects.create(
+            document_type=document_type,
+            data=data,
+        )
+        print("Created KnowledgeDocument: ", document.id)  # Print ID of created document
+
+        try:
+            # Load the document and create embeddings
+            print("Loading the document and creating embeddings")
+            loader = get_loader(document_type, file=full_file_path)
+            documents, texts = load_and_split_documents(loader)
+            ctx = IndexingContext(
+                user=request.user,
+                namespace=knowledgebase.namespace,
+                knowledgebase=knowledgebase,
+                document=document,
+                texts=texts,
+            )
+            index_document(ctx)
+            print("Finished indexing document")
+        except Exception as e:
+            print("Exception occurred while processing file: ", str(e))  # Print exception details
+            return Response({"error": "Error processing file."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        serializer = KnowledgeDocumentSerializer(document)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 
@@ -537,16 +538,20 @@ class CurrentUserView(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_object(self):
-        print("CurrentUserView.get_object called")
-        print(f"User: {self.request.user}")
         return self.request.user
+
+class UserProfileView(generics.RetrieveAPIView):
+    serializer_class = UserProfileSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self):
+        return self.request.user.profile  # assuming a related_name of 'profile' on the UserProfile model
+
     
 class CustomTokenObtainPairView(TokenObtainPairView):
     @csrf_exempt
     def post(self, request, *args, **kwargs):
-       
         data = json.loads(request.body)
-        print(data)
         username = data.get('username', '')
         password = data.get('password', '')
         cache_key = f'user:{username}'
@@ -562,15 +567,18 @@ class CustomTokenObtainPairView(TokenObtainPairView):
             if user is not None:
                 cache.set(cache_key, user, timeout=300)
 
-        # If the user is authenticated, log them in and return a token pair
+        # If the user is authenticated, create UserProfile if it doesn't exist, log them in and return a token pair
         if user is not None:
+            UserProfile.objects.get_or_create(user=user, defaults={
+                'avatar': File(open(os.path.join('up_dated', 'media', 'avatar', 'default.png'), 'rb'))
+            })
             login(request, user)
             return super().post(request, *args, **kwargs)
 
         # If the user is not authenticated, return an error response
         else:
             return JsonResponse({'message': 'Bad Credentials!', 'status': 'error'}, status=401)
-        
+
 class CustomTokenRefreshView(TokenRefreshView):
     def post(self, request, *args, **kwargs):
         try:
@@ -581,3 +589,14 @@ class CustomTokenRefreshView(TokenRefreshView):
             return Response({'access': new_access_token, 'refresh': new_refresh_token}, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({'error': 'Invalid refresh token'}, status=status.HTTP_400_BAD_REQUEST)
+        
+
+class UpdateProfileView(generics.UpdateAPIView):
+    queryset = UserProfile.objects.all()
+    serializer_class = UserProfileSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self):
+        return UserProfile.objects.get(pk=self.kwargs['pk'])
+
+
