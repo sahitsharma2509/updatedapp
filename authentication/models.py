@@ -7,6 +7,11 @@ from django.db.models import JSONField
 import tiktoken
 from django.dispatch import receiver
 from django.db.models.signals import post_save
+from django.utils import timezone
+from django.db import transaction
+
+
+from dateutil.relativedelta import relativedelta
 tokenizer = tiktoken.get_encoding('cl100k_base')
 
 # create the length function
@@ -14,15 +19,57 @@ def tiktoken_len(text):
     tokens = tokenizer.encode(text, disallowed_special=())
     return len(tokens)
 
+class Plan(models.Model):
+    name = models.CharField(max_length=50)
+    token_limit = models.IntegerField()
+
+    def __str__(self):
+        return self.name
 
 
 class UserProfile(models.Model):
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name ="profile")
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
     avatar = models.ImageField(upload_to='avatars/', null=True, blank=True)
+    plan = models.ForeignKey(Plan, on_delete=models.SET_NULL, null=True)
+    tokens_used = models.IntegerField(default=0)
+    tokens_remaining = models.IntegerField(default=0)
+    last_reset = models.DateTimeField(default=timezone.now)
 
     def __str__(self):
         return self.user.username
     
+    def check_and_reset_tokens(self):
+        if timezone.now() > self.last_reset + relativedelta(months=1):
+            self.tokens_used = 0
+            self.tokens_remaining = self.plan.token_limit  # resetting remaining tokens to full limit
+            self.last_reset = timezone.now()
+            self.save()
+
+
+    def can_use_tokens(self, tokens_needed):
+        self.check_and_reset_tokens()
+        return self.tokens_used + tokens_needed <= self.plan.token_limit
+
+    def use_tokens(self, tokens_needed):
+        self.check_and_reset_tokens()
+        
+        if self.can_use_tokens(tokens_needed):
+            self.tokens_used += tokens_needed
+        else:
+            self.tokens_used = self.plan.token_limit
+
+        # Calculate the number of tokens remaining
+        self.tokens_remaining = self.plan.token_limit - self.tokens_used
+
+        self.save()
+        self.refresh_from_db()
+
+        # Return the number of tokens remaining
+        return self.tokens_remaining
+
+
+
+
 
 
 
@@ -87,9 +134,6 @@ class Conversation(models.Model):
     def document_types(self):
         return ', '.join(self.knowledge_base.documents.values_list('document_type', flat=True))
 
-    @property
-    def total_token_length(self):
-        return sum(msg.token_length for msg in self.messages.all())
     
 class Message(models.Model):
     conversation = models.ForeignKey(Conversation, on_delete=models.CASCADE, related_name='messages')
@@ -97,9 +141,8 @@ class Message(models.Model):
     text = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
 
-    @property
-    def token_length(self):
-        return tiktoken_len(self.text)
+    
+
 
 
 class Chunk(models.Model):

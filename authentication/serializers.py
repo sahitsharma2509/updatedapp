@@ -21,10 +21,16 @@ class UserSerializer(ModelSerializer):
 
 class UserProfileSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)  # Make 'user' field read-only
+    token_limit = serializers.SerializerMethodField()
 
     class Meta:
         model = UserProfile
-        fields = ('user', 'avatar')
+        fields = ('user', 'avatar', 'tokens_used', 'token_limit', 'tokens_remaining')
+
+    def get_token_limit(self, obj):
+        if obj.plan:
+            return obj.plan.token_limit
+        return None
 
 
 

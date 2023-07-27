@@ -1,5 +1,5 @@
 from decouple import config
-
+from .models import UserProfile
 from langchain.embeddings.openai import OpenAIEmbeddings
 import pinecone
 from langchain.docstore.document import Document 
@@ -16,13 +16,7 @@ from langchain.memory import (
 )
 from langchain.chains import LLMChain
 from langchain.llms import OpenAI
-# create the length function
-def tiktoken_len(text):
-    tokens = tokenizer.encode(
-        text,
-        disallowed_special=()
-    )
-    return len(tokens)
+
 
 
 
@@ -36,7 +30,7 @@ PINECONE_ENVIRONMENT = config("Pinecone_env")
 
 llm = ChatOpenAI(temperature=0, model=model_name)
 llm_title = ChatOpenAI(temperature=0,model='gpt-3.5-turbo')
-tokenizer = tiktoken.get_encoding('cl100k_base')
+
 
 pinecone.init(
     api_key=PINECONE_API_KEY ,  # find at app.pinecone.io
@@ -142,9 +136,10 @@ def get_response(query, pinecone_index ,namespace):
 
         chain = load_qa_chain(llm, chain_type="stuff",prompt=PROMPT,memory=memory)
         response = chain({"input_documents": test2, "question": query}, return_only_outputs=True)
+
+        
         print("Response",response['output_text'])
-        print("User Token length",tiktoken_len(query))
-        print("AI token length", tiktoken_len(response['output_text']))
+
         
         return response['output_text']
     

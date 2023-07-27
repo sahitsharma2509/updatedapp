@@ -6,7 +6,7 @@ from django.db import transaction
 from django.core.cache import cache
 from django.core.exceptions import MultipleObjectsReturned
 from django_redis import get_redis_connection
-from .models import UserProfile
+from .models import UserProfile, Message, Plan
 from django.contrib.auth.models import User
 
 
@@ -76,11 +76,22 @@ def handle_summary_creation(sender, instance, created, **kwargs):
 @receiver(post_save, sender=User)
 def save_user_profile(sender, instance, **kwargs):
     if kwargs.get('created', False):  # User has just been created
-        UserProfile.objects.create(user=instance, avatar='avatar/default.png')
+        free_plan = Plan.objects.get(name='free')
+        UserProfile.objects.create(user=instance, avatar='avatar/default.png', plan=free_plan)
     else:  
         try:
             instance.profile.save()
         except UserProfile.DoesNotExist:
-            UserProfile.objects.create(user=instance, avatar='avatar/default.png')
+            free_plan = Plan.objects.get(name='free')
+            UserProfile.objects.create(user=instance, avatar='avatar/default.png', plan=free_plan)
 
 
+"""
+@receiver(post_save, sender=Message)
+def update_user_tokens(sender, instance, created, **kwargs):
+    if created and not instance.is_user:  # New message created and sender is not user (i.e., sender is AI)
+        user = instance.conversation.user
+        # Get the sum of all message tokens in the conversation
+        total_tokens = instance.conversation.total_token_length
+        user.profile.use_tokens(total_tokens)
+"""

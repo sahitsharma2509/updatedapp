@@ -14,7 +14,16 @@ from rest_framework_simplejwt.tokens import AccessToken
 from .response import get_response,generate_title
 import base64
 from asgiref.sync import sync_to_async
+import tiktoken
+# create the length function
+def tiktoken_len(text):
+    tokens = tokenizer.encode(
+        text,
+        disallowed_special=()
+    )
+    return len(tokens)
 
+tokenizer = tiktoken.get_encoding('cl100k_base')
 
 class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
@@ -84,7 +93,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         except Vectorstore.DoesNotExist:
         # Handle the case where the Vectorstore does not exist
             return None
-
+    @database_sync_to_async
+    def get_user_profile(self, user):
+        return user.profile
+    
     async def receive(self, text_data):
         text_data_json = json.loads(text_data)
         conversation_id = text_data_json['conversation']
@@ -133,13 +145,26 @@ class ChatConsumer(AsyncWebsocketConsumer):
             # Save the updated conversation back to the database
             await sync_to_async(conversation.save)()
 
+
+        token_length = tiktoken_len(text)+tiktoken_len(response)
+        print("Tokenlength",token_length)
+        user_profile = await self.get_user_profile(self.user)
+
+        # Update the tokens
+        # Update the tokens
+        tokens_remaining = await sync_to_async(user_profile.use_tokens)(token_length)
+
  
 
     # Create the messages
         message_user = await self.create_message(conversation, True, text)
         message_bot = await self.create_message(conversation, False, response)
 
-     
+        
+
+
+
+
 
         await self.channel_layer.group_send(
             self.room_group_name,
@@ -148,16 +173,22 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 "message": response_encoded,
                 "username": self.user.username,
                 "is_user": False,
+                "tokens_left": tokens_remaining,
             },
         )
+
+        print(f"Tokens remaining: {tokens_remaining}")
+
 
 
     
     # Receive message from room group
     async def chat_message(self, event):
         message = event['message']
+        tokens_left = event['tokens_left']
 
         # Send message to WebSocket
         await self.send(text_data=json.dumps({
-            'message': message
+            'message': message,
+            'tokens_left':tokens_left
         }))
